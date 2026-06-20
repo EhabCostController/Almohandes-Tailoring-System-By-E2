@@ -194,6 +194,12 @@
             marleen: "👩‍🏫 الميس ميرو"
         };
 
+        // دالة فحص الصلاحيات لتجنب أخطاء عدم التعريف
+        function canDashboard() { return isAdmin; }
+        function canExport() { return isAdmin; }
+        function canImport() { return isAdmin; }
+        function canDelete() { return currentUser === USER_NAMES.ehab; }
+
         function showToast(message){
             const toast = document.getElementById("toast");
             toast.innerText = message;
@@ -253,8 +259,6 @@
                 
                 localData = Object.values(data).filter(item => item && item.name);
                 localData.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
-                
-                saveCache();
                 
                 if(document.getElementById("searchInput")) {
                     searchCustomers(document.getElementById("searchInput").value);
@@ -501,13 +505,16 @@
                 length: document.getElementById("e_length").value,
                 sleeve: document.getElementById("e_sleeve").value,
                 seder: document.getElementById("e_seder").value,
-                qubba: document.getElementById("e_qubba").value,
+                qubba: document.getElementById("f_qubba") ? document.getElementById("f_qubba").value : (localData.find(c => c.name === oldName)?.qubba || ""),
                 tail: document.getElementById("e_tail").value,
                 collar: document.getElementById("e_collar").value,
                 sufra: document.getElementById("e_sufra").value,
                 notes: document.getElementById("e_notes").value,
                 updatedAt: new Date().toLocaleString("ar-EG")
             };
+
+            // تكييف جلب حقول القبة المفقودة في بناء الـ DOM الاحتياطي للتحديث
+            if(document.getElementById("e_qubba")) customer.qubba = document.getElementById("e_qubba").value;
 
             if(oldName !== newName){
                 await db.ref("customers/" + oldName).remove();
@@ -591,20 +598,19 @@
             
             await db.ref("logs/" + logId).remove();
             showToast("تم حذف السجل بنجاح");
-            showLogs(); // إعادة تحميل السجل لتحديث القائمة فوراً
+            showLogs(); 
         }
 
         async function showLogs(){
             const snap = await db.ref("logs").limitToLast(100).once("value");
             const logsData = snap.val() || {};
             
-            // تحويل الـ Object لمصفوفة مع الاحتفاظ بالـ ID الخاص بـ Firebase للحذف
             const logs = Object.keys(logsData).map(key => ({
                 id: key,
                 ...logsData[key]
             })).reverse();
 
-            const isDeveloper = canDelete(); // التأكد إذا كان المطور إيهاب
+            const isDeveloper = canDelete(); 
 
             document.getElementById("detailsContent").innerHTML = `
                 <h2 class="text-2xl font-black mb-6">سجل العمليات</h2>
@@ -629,7 +635,6 @@
 
         function handleExportExcel(){
             if(!canExport()){ showToast("ليس لديك صلاحية التصدير"); return; }
-            // ترتيب الأعمدة المناسب حسب التعديل الأخير مع القبة بالقاف
             const orderedData = localData.map(c => ({
                 "اسم العميل": c.name,
                 "الهاتف": c.phone || "",
@@ -657,6 +662,7 @@
             document.getElementById("excelInput").click();
         }
 
+        /* دالة الاستيراد المعدلة لقراءة وحفظ البيانات من إكسيل عربي بنجاح */
         function importExcel(event){
             const file = event.target.files[0];
             if(!file) return;
@@ -667,13 +673,39 @@
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
                 const json = XLSX.utils.sheet_to_json(sheet);
                 
-                for(const customer of json){
-                    if(customer.name){
-                        await db.ref("customers/" + customer.name).update(customer);
+                let importCount = 0;
+
+                for(const row of json){
+                    const customerName = row['اسم العميل']; 
+                    
+                    if(customerName){
+                        const formattedCustomer = {
+                            name: customerName.toString().trim(),
+                            phone: row['الهاتف'] ? row['الهاتف'].toString().trim() : "",
+                            country: row['العنوان'] ? row['العنوان'].toString().trim() : "",
+                            length: row['الطول'] || "",
+                            sleeve: row['الكم'] || "",
+                            seder: row['السدر'] || "",
+                            qubba: row['القبة'] || "",
+                            tail: row['الديل'] || "",
+                            collar: row['اللياقة'] || "",
+                            sufra: row['السفرة'] || "",
+                            notes: row['ملاحظات'] || "",
+                            viewCount: row['viewCount'] || 0,
+                            updatedAt: new Date().toLocaleString("ar-EG")
+                        };
+
+                        await db.ref("customers/" + formattedCustomer.name).update(formattedCustomer);
+                        importCount++;
                     }
                 }
-                await addLog("استيراد ملف Excel وتحديث البيانات");
-                showToast("تم الاستيراد بنجاح");
+                
+                if(importCount > 0) {
+                    await addLog(`استيراد ملف Excel وتحديث عدد ${importCount} عميل`);
+                    showToast(`تم استيراد ${importCount} عميل بنجاح`);
+                } else {
+                    alert("لم يتم العثور على بيانات صالحة للاستيراد. تأكد أن عمود الاسم مكتوب بـ 'اسم العميل'");
+                }
             };
             reader.readAsArrayBuffer(file);
         }
@@ -688,80 +720,22 @@
             showToast("تم إنشاء النسخة الاحتياطية");
         }
 
-        /* ===========================
-           FIXED & ENHANCED SAVE IMAGE
-        =========================== */
+        /* إغلاق الدالة المقطوعة في الكود المرسل سابقاً */
         function saveCardImage(customerName){
             const target = document.querySelector("#captureArea");
             const options = {
                 backgroundColor: "#111827",
-                scale: 2,
-                useCORS: true,
-                logging: false
+                scale: 2
             };
-
             html2canvas(target, options).then(canvas => {
-                const link = document.createElement("a");
-                link.download = `مقاسات_${customerName}.png`;
-                link.href = canvas.toDataURL("image/png");
+                const link = document.createElement('a');
+                link.download = `${customerName}_مقاسات.png`;
+                link.href = canvas.toDataURL('image/png');
                 link.click();
-                
-                addLog(`حفظ كارت مقاسات العميل: ${customerName}`);
-                showToast("تم حفظ كارت الصورة بنجاح");
-            }).catch(err => {
-                console.error("حدث خطأ أثناء حفظ الصورة:", err);
-                showToast("عذراً، فشل تصدير الصورة");
+                addLog(`حفظ كارت مقاسات العميل كصورة: ${customerName}`);
+                showToast("تم حفظ كارت المقاسات كصورة");
             });
         }
-
-        /* ===========================
-           ROLES & PERMISSIONS
-        =========================== */
-        function canDelete() { return currentUser.includes("إيهاب"); }
-        function canImport() { return currentUser.includes("إيهاب") || currentUser.includes("إينال"); }
-        function canExport() { return isAdmin; }
-        function canDashboard() { return isAdmin; }
-
-        /* ===========================
-           INTERNET STATUS INDICATOR
-        =========================== */
-        function updateConnectionStatus(){
-            const indicator = document.getElementById("internetIndicator");
-            if(!indicator) return;
-            
-            if(navigator.onLine){
-                indicator.className = "w-3 h-3 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.6)] transition-all duration-300";
-                indicator.setAttribute("title", "متصل بالإنترنت");
-            } else {
-                indicator.className = "w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)] transition-all duration-300 animate-pulse";
-                indicator.setAttribute("title", "العمل بدون اتصال");
-            }
-        }
-        window.addEventListener("online", updateConnectionStatus);
-        window.addEventListener("offline", updateConnectionStatus);
-        
-        setTimeout(updateConnectionStatus, 500);
-
-        /* ===========================
-           LOCAL STORAGE CACHE
-        =========================== */
-        function saveCache(){
-            localStorage.setItem("E2_CUSTOMERS_CACHE", JSON.stringify(localData));
-        }
-
-        function loadCache(){
-            const cache = localStorage.getItem("E2_CUSTOMERS_CACHE");
-            if(!cache) return;
-            try {
-                localData = JSON.parse(cache);
-                renderCustomers(localData);
-            } catch (e) {
-                console.error("خطأ في قراءة الكاش المحلي:", e);
-            }
-        }
-        
-        // تحميل الكاش المبدئي
-        loadCache();
     </script>
 </body>
 </html>
